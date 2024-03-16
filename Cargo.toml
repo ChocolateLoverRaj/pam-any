@@ -1,0 +1,16 @@
+[package]
+name = "pam-any"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+pam-bindings = { version = "0.1.1", package = "pam-bindings" }
+log = "0.4.21"
+serde = "1.0.197"
+serde_json = "1.0.114"
+pam = "0.8.0"
+crossbeam-channel = "0.5.12"
