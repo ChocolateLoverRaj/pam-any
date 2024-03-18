@@ -1,2 +1,2 @@
-auth sufficient libpam_any.so {"login": "Password", "pam-random": "Random Chance"}
-account sufficient libpam_any.so {"login": "Password", "pam-random": "Random Chance"}
+auth sufficient libpam_any.so {"login": "Password", "pam-random": "Random Chance"} one
+account sufficient libpam_any.so
