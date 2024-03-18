@@ -1,15 +1,7 @@
-#[derive(Debug, Copy, Clone)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub enum Mode {
     One,
     All
-}
-
-impl Mode {
-    pub fn from_str(str: &str) -> Result<Mode, ()> {
-        match str {
-            "one" => Ok(Mode::One),
-            "all"=> Ok(Mode::All),
-            _ => Err(())
-        }
-    }
 }

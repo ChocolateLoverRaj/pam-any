@@ -10,8 +10,7 @@ crate-type = ["cdylib"]
 [dependencies]
 pam-bindings = { version = "0.1.1", package = "pam-bindings" }
 log = "0.4.21"
-serde = "1.0.197"
+serde = { version = "1.0.197", features = ["derive"] }
 serde_json = "1.0.114"
 pam = "0.8.0"
 crossbeam-channel = "0.5.12"
-substring = "1.4.5"
