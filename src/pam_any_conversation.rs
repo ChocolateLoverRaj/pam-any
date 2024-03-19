@@ -1,16 +1,18 @@
 use std::ffi::{CStr, CString};
 use std::sync::{Arc, Mutex};
+use std::thread;
 use pam::Conversation;
+use pam::ffi::PAM_ERROR_MSG;
 use pam_bindings::constants::{PAM_PROMPT_ECHO_OFF, PAM_TEXT_INFO};
 use crate::unsafe_send::UnsafeSend;
 
-pub struct PamAnyConversation<'a> {
+pub struct PamAnyConversation {
     pub service_display_name: String,
     pub user: String,
-    pub conv: Arc<Mutex<UnsafeSend<'a>>>,
+    pub conv: Arc<Mutex<UnsafeSend>>,
 }
 
-impl<'a> Conversation for PamAnyConversation<'a> {
+impl Conversation for PamAnyConversation {
     fn prompt_echo(&mut self, _msg: &CStr) -> Result<CString, ()> {
         CString::new(&*self.user).map_err(|_e| ())
     }
@@ -29,12 +31,19 @@ impl<'a> Conversation for PamAnyConversation<'a> {
 
     fn info(&mut self, msg: &CStr) {
         let msg = msg.to_str().map_err(|_e| ()).unwrap();
-        self.conv.lock().unwrap().send(PAM_TEXT_INFO, &format!("[{}] {}", self.service_display_name, msg)).unwrap();
+        let msg = format!("[{}] {}", self.service_display_name, msg);
+        let conv = self.conv.clone();
+        thread::spawn(move || {
+            conv.lock().unwrap().send(PAM_TEXT_INFO, &msg).unwrap();
+        });
     }
 
     fn error(&mut self, msg: &CStr) {
-        println!("Msg: {:#?}", msg);
-
-        todo!()
+        let msg = msg.to_str().map_err(|_e| ()).unwrap();
+        let msg = format!("[{}] {}", self.service_display_name, msg);
+        let conv = self.conv.clone();
+        thread::spawn(move || {
+            conv.lock().unwrap().send(PAM_ERROR_MSG, &msg).unwrap();
+        });
     }
 }

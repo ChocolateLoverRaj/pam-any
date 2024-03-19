@@ -1,16 +1,16 @@
 use std::ops::Deref;
 use pam_bindings::conv::Conv;
 
-pub struct UnsafeSend<'a> {
-    pub conv: Conv<'a>,
+pub struct UnsafeSend {
+    pub conv: Conv<'static>,
 }
 
-impl<'a> Deref for UnsafeSend<'a> {
-    type Target = Conv<'a>;
+impl Deref for UnsafeSend{
+    type Target = Conv<'static>;
 
     fn deref(&self) -> &Self::Target {
         &self.conv
     }
 }
 
-unsafe impl<'a> Send for UnsafeSend<'a> {}
+unsafe impl Send for UnsafeSend{}
