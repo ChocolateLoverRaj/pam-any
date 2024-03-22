@@ -14,11 +14,13 @@ use crate::mode::Mode;
 use serde::{Serialize, Deserialize};
 
 use crate::pam_any_conversation::PamAnyConversation;
+use crate::un_hide_input::un_hide_input;
 use crate::unsafe_send::UnsafeSend;
 
 mod pam_any_conversation;
 mod unsafe_send;
 mod mode;
+mod un_hide_input;
 
 struct PamAny;
 pam_bindings::pam_hooks!(PamAny);
@@ -68,6 +70,7 @@ impl PamHooks for PamAny {
                 let mut failed_modules = 0;
                 for result in rx {
                     if result.is_ok() {
+                        un_hide_input().unwrap();
                         return PAM_SUCCESS;
                     } else {
                         failed_modules += 1;
@@ -84,6 +87,7 @@ impl PamHooks for PamAny {
                     if result.is_ok() {
                         successful_modules += 1;
                         if successful_modules == input.modules.len() {
+                            un_hide_input().unwrap();
                             return PAM_SUCCESS;
                         }
                     } else {
