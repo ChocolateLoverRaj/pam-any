@@ -34,9 +34,9 @@ struct Input {
 impl PamHooks for PamAny {
     fn sm_authenticate(pamh: &mut PamHandle, args: Vec<&CStr>, _flags: PamFlag) -> PamResultCode {
         let arg_string = args.iter().map(|s| s.to_str().unwrap()).collect::<Vec<_>>().join(" ");
-        println!("Input: {}", arg_string);
+        // println!("Input: {}", arg_string);
         let input = pam_try!(serde_json::from_str::<Input>(&arg_string).map_err(|_e| PAM_AUTH_ERR));
-        println!("Input: {:#?}", input);
+        // println!("Input: {:#?}", input);
 
         let conv = match pamh.get_item::<Conv>() {
             Ok(Some(conv)) => conv,
