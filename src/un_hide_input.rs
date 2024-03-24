@@ -1,5 +1,5 @@
 use std::io;
-use termios::{ECHO, ICANON, TCSANOW, tcsetattr, Termios};
+use termios::{tcsetattr, Termios, ECHO, ICANON, TCSANOW};
 
 pub fn un_hide_input() -> io::Result<()> {
     let mut termios = Termios::from_fd(libc::STDIN_FILENO)?;
