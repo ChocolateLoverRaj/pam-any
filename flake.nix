@@ -1,6 +1,4 @@
 {
-  description = "A devShell example";
-
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     rust-overlay.url = "github:oxalica/rust-overlay";
@@ -47,22 +45,55 @@
                 services.getty = {
                   autologinUser = "a";
                 };
-                security.pam.services.test = {
-                  enable = true;
-                  text = ''
-                    auth sufficient ${pam-any}/lib/libpam_any.so { "mode": "One", "modules": { "login": "Password" } }
-                  '';
+                security.pam.services = {
+                  success2s = {
+                    enable = true;
+                    text = ''
+                      auth required pam_exec.so quiet ${pkgs.coreutils}/bin/sleep 2
+                    '';
+                  };
+                  fail2s = {
+                    enable = true;
+                    text = ''
+                      auth required pam_exec.so quiet ${pkgs.coreutils}/bin/sleep 2
+                      auth required pam_deny.so
+                    '';
+                  };
+                  password-or-success2s = {
+                    enable = true;
+                    text = ''
+                      auth sufficient ${pam-any}/lib/libpam_any.so { "mode": "One", "modules": { "login": "Password", "success2s": "Success in 2s" } }
+                    '';
+                  };
+                  password-or-fail2s = {
+                    enable = true;
+                    text = ''
+                      auth sufficient ${pam-any}/lib/libpam_any.so { "mode": "One", "modules": { "login": "Password", "fail2s": "Fails in 2s" } }
+                    '';
+                  };
+                  password-and-success2s = {
+                    enable = true;
+                    text = ''
+                      auth sufficient ${pam-any}/lib/libpam_any.so { "mode": "All", "modules": { "login": "Password", "success2s": "Success in 2s" } }
+                    '';
+                  };
+                  password-and-fail2s = {
+                    enable = true;
+                    text = ''
+                      auth sufficient ${pam-any}/lib/libpam_any.so { "mode": "All", "modules": { "login": "Password", "fail2s": "Fails in 2s" } }
+                    '';
+                  };
                 };
                 environment.systemPackages = with pkgs; [
                   pamtester
-                  (writeShellApplication {
-                    name = "a";
-                    text = ''
-                      pamtester test "$USER" authenticate
-                    '';
-                  })
+                  # (writeShellApplication {
+                  #   name = "a";
+                  #   text = ''
+                  #     pamtester test "$USER" authenticate
+                  #   '';
+                  # })
                 ];
-                environment.interactiveShellInit = "a";
+                # environment.interactiveShellInit = "a";
                 virtualisation.vmVariant.virtualisation = {
                   diskImage = null;
                 };
@@ -86,6 +117,7 @@
         nixosConfigurations.vm = vm;
         packages = {
           pam-any = pam-any;
+          default = pam-any;
           vm = vm.config.system.build.vm;
         };
       }

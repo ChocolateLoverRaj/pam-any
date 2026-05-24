@@ -1,2 +1,0 @@
-auth sufficient libpam_any.so { "mode": "One", "modules": { "login": "Password", "pam-random": "Random Chance" } }
-account sufficient libpam_any.so
