@@ -20,7 +20,14 @@ The text after `libpam_any.so` is a JSON object:
 `mode`: Can be either `"One"` or `"All"`. "One" means that you can authenticate with any of the specified methods. For example, you can *either* type your password or use your fingerprint. "All" means that you must authenticate all of the specified modules, but in any order.
 `modules`: Is an object where the key is a file that exists in `/etc/pam.d` and the value is the display name of the service. In the example above, `pam-any` will internally start PAM authentication based on the `/etc/pam.d/login` file (Text password), and `/etc/pam.d/pam-random` file [(A test module that randomly succeeds / fails)](https://github.com/ChocolateLoverRaj/pam-random). As soon as one of the two modules authenticates successfully, the `pam-any` module will authenticate successfully. If all sub-modules fail (wrong password), then `pam-any` will fail.
 
-## Development
+## Testing with Nix (the easy way)
+Run
+```sh
+nix run .#vm
+```
+Then you can use the `a` shortcut command to run `pamtester`. It should automatically log you in (username is `a` and password is `a`) and run `a`.
+
+## Testing on a Fedora VM (old method of testing)
 I created a VM to test stuff without messing up the distro I code in.
 - Create a Fedora VM (can probably be any distro)
 - Create a user named `test`
