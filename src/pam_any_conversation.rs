@@ -1,10 +1,11 @@
-use std::ffi::{CStr, CString};
-use std::sync::{Arc, Mutex};
-use std::thread;
-use pam::Conversation;
-use pam::ffi::PAM_ERROR_MSG;
-use pam_bindings::constants::{PAM_PROMPT_ECHO_OFF, PAM_TEXT_INFO};
 use crate::unsafe_send::UnsafeSend;
+use pam::{Conversation, ffi::PAM_ERROR_MSG};
+use pam_bindings::constants::{PAM_PROMPT_ECHO_OFF, PAM_TEXT_INFO};
+use std::{
+    ffi::{CStr, CString},
+    sync::{Arc, Mutex},
+    thread,
+};
 
 pub struct PamAnyConversation {
     pub service_display_name: String,
@@ -20,13 +21,13 @@ impl Conversation for PamAnyConversation {
     fn prompt_blind(&mut self, msg: &CStr) -> Result<CString, ()> {
         let msg = msg.to_str().map_err(|_e| ())?;
         let conv = self.conv.lock().map_err(|_e| ())?;
-        let response = conv.send(PAM_PROMPT_ECHO_OFF, &format!("[{}] {}", self.service_display_name, msg)).map_err(|_e| ())?;
-        match response {
-            Some(c_str) => {
-                Ok(c_str.into())
-            }
-            None => Err(())
-        }
+        let response = conv
+            .send(
+                PAM_PROMPT_ECHO_OFF,
+                &format!("[{}] {}", self.service_display_name, msg),
+            )
+            .map_err(|_e| ())?;
+        response.ok_or(())
     }
 
     fn info(&mut self, msg: &CStr) {
