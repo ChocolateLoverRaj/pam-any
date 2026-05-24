@@ -49,13 +49,17 @@
                   success2s = {
                     enable = true;
                     text = ''
+                      auth required pam_echo.so [PAM_INFO] Starting 2s success timer...
                       auth required pam_exec.so quiet ${pkgs.coreutils}/bin/sleep 2
+                      auth required pam_echo.so [PAM_INFO] Timer finished. Permitting auth.
                     '';
                   };
                   fail2s = {
                     enable = true;
                     text = ''
+                      auth required pam_echo.so [PAM_INFO] Starting 2s failure timer...
                       auth required pam_exec.so quiet ${pkgs.coreutils}/bin/sleep 2
+                      auth required pam_echo.so [PAM_ERROR] Timer finished. Denying auth.
                       auth required pam_deny.so
                     '';
                   };
@@ -84,16 +88,31 @@
                     '';
                   };
                 };
-                environment.systemPackages = with pkgs; [
-                  pamtester
-                  # (writeShellApplication {
-                  #   name = "a";
-                  #   text = ''
-                  #     pamtester test "$USER" authenticate
-                  #   '';
-                  # })
-                ];
-                # environment.interactiveShellInit = "a";
+                environment.systemPackages =
+                  with pkgs;
+                  [
+                    pamtester
+                  ]
+                  # Add shortcut commands for testing 4 scenarios
+                  ++ (lib.mapAttrsToList
+                    (
+                      cmd: service:
+                      (writeShellApplication {
+                        name = cmd;
+                        text = ''
+                          pamtester ${service} "$USER" authenticate
+                        '';
+                      })
+                    )
+                    {
+                      os = "password-or-success2s";
+                      of = "password-or-fail2s";
+                      as = "password-and-success2s";
+                      af = "password-and-fail2s";
+                    }
+                  );
+                # For the QEMU window name to be "QEMU (pam-any)" instead of generic "QEMU (nixos)"
+                networking.hostName = "pam-any";
                 virtualisation.vmVariant.virtualisation = {
                   diskImage = null;
                 };
