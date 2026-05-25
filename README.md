@@ -25,7 +25,9 @@ Run
 ```sh
 nix run .#vm
 ```
-Then you can use the `a` shortcut command to run `pamtester`. It should automatically log you in (username is `a` and password is `a`) and run `a`.
+The username is `a` and the password is `a`. It will automatically log in the user.
+
+Then run `os`, `as`, `of`, or `af` commands as shortcuts to the `pamtester command`. See `flake.nix` for the configured test PAM services.
 
 ## Testing on a Fedora VM (old method of testing)
 I created a VM to test stuff without messing up the distro I code in.
