@@ -1,5 +1,10 @@
+#![forbid(unsafe_code)]
+
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
+use std::fs::File;
+use std::io::{Read, Write};
+use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, SyncSender};
 use std::thread::{self, Thread};
@@ -13,6 +18,9 @@ use pam_bindings::conv::Conv;
 use pam_bindings::module::{PamHandle, PamHooks};
 use pam_bindings::pam_try;
 use pam_client2::{Context, ConversationHandler, ErrorCode, Flag};
+use rustix::event::{PollFd, PollFlags, poll};
+use rustix::net::{SendFlags, send};
+use rustix::termios::{LocalModes, OptionalActions, SpecialCodeIndex, tcgetattr, tcsetattr};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
@@ -25,6 +33,8 @@ pub enum Mode {
 struct Input {
     mode: Mode,
     modules: HashMap<String, String>,
+    #[serde(default)]
+    silence_messages: bool,
 }
 
 enum MsgType {
@@ -60,117 +70,73 @@ struct Req {
     str: String,
 }
 
-fn dup_fd(fd: libc::c_int) -> Option<libc::c_int> {
-    let fd = unsafe { libc::dup(fd) };
-    if fd >= 0 { Some(fd) } else { None }
-}
+fn read_password_interruptible(
+    tty: &mut File,
+    notify: &mut UnixStream,
+    prompt: &str,
+) -> Option<CString> {
+    let _ = tty.write_all(prompt.as_bytes());
 
-fn read_password_interruptible(tty_fd: libc::c_int, notify_fd: libc::c_int, prompt: &str) -> Option<CString> {
-    unsafe {
-        libc::write(
-            tty_fd,
-            prompt.as_ptr() as *const libc::c_void,
-            prompt.len(),
-        );
+    let orig = tcgetattr(&*tty).ok()?;
 
-        let mut orig: libc::termios = std::mem::zeroed();
-        if libc::tcgetattr(tty_fd, &mut orig) != 0 {
-            return None;
-        }
-
-        // ECHO/ICANON off for raw single-byte reads; ISIG off so Ctrl-C is byte 0x03, not a real SIGINT.
-        let mut raw = orig;
-        raw.c_lflag &= !(libc::ECHO | libc::ICANON | libc::ISIG);
-        raw.c_cc[libc::VMIN] = 1;
-        raw.c_cc[libc::VTIME] = 0;
-        if libc::tcsetattr(tty_fd, libc::TCSANOW, &raw) != 0 {
-            // Couldn't disable echo — bail out rather than risk echoing the password
-            return None;
-        }
-
-        let nfds = tty_fd.max(notify_fd) + 1;
-        let mut input: Vec<u8> = Vec::new();
-        let result;
-
-        'read: loop {
-            let mut rfds: libc::fd_set = std::mem::zeroed();
-            libc::FD_ZERO(&mut rfds);
-            libc::FD_SET(tty_fd, &mut rfds);
-            libc::FD_SET(notify_fd, &mut rfds);
-
-            if libc::select(
-                nfds,
-                &mut rfds,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-            ) <= 0
-            {
-                result = None;
-                break;
-            }
-
-            if libc::FD_ISSET(notify_fd, &rfds) {
-                // Another auth method succeeded — erase the prompt line
-                let clear = b"\r\x1b[2K";
-                libc::write(tty_fd, clear.as_ptr() as *const libc::c_void, clear.len());
-                // Drain the pipe so it doesn't fire again
-                let mut drain = [0u8; 64];
-                let _ = libc::read(notify_fd, drain.as_mut_ptr() as *mut libc::c_void, drain.len());
-                result = None;
-                break;
-            }
-
-            if libc::FD_ISSET(tty_fd, &rfds) {
-                let mut b = 0u8;
-                if libc::read(tty_fd, &mut b as *mut u8 as *mut libc::c_void, 1) <= 0 {
-                    result = None;
-                    break;
-                }
-                match b {
-                    b'\n' | b'\r' => {
-                        libc::write(tty_fd, b"\n".as_ptr() as *const libc::c_void, 1);
-                        result = CString::new(input).ok();
-                        break 'read;
-                    }
-                    0x7f | 0x08 => {
-                        input.pop(); // backspace / DEL
-                    }
-                    0x03 | 0x04 => {
-                        result = None; // Ctrl-C / Ctrl-D
-                        break;
-                    }
-                    c => input.push(c),
-                }
-            }
-        }
-
-        libc::tcsetattr(tty_fd, libc::TCSANOW, &orig);
-        result
+    // ECHO/ICANON off for raw single-byte reads; ISIG off so Ctrl-C is byte 0x03, not a real SIGINT.
+    let mut raw = orig.clone();
+    raw.local_modes -= LocalModes::ECHO | LocalModes::ICANON | LocalModes::ISIG;
+    raw.special_codes[SpecialCodeIndex::VMIN] = 1;
+    raw.special_codes[SpecialCodeIndex::VTIME] = 0;
+    if tcsetattr(&*tty, OptionalActions::Now, &raw).is_err() {
+        // Couldn't disable echo, so bail out rather than risk echoing the password
+        return None;
     }
-}
 
-// Closes on every return path, including early pam_try! exits.
-struct FdGuard([Option<libc::c_int>; 2]);
-impl Drop for FdGuard {
-    fn drop(&mut self) {
-        for fd in self.0.into_iter().flatten() {
-            unsafe {
-                libc::close(fd);
+    let mut input: Vec<u8> = Vec::new();
+    let result = 'read: loop {
+        let mut fds = [
+            PollFd::new(&*tty, PollFlags::IN),
+            PollFd::new(&*notify, PollFlags::IN),
+        ];
+        if poll(&mut fds, None).is_err() {
+            break None;
+        }
+        let (tty_ready, notify_ready) =
+            (!fds[0].revents().is_empty(), !fds[1].revents().is_empty());
+
+        if notify_ready {
+            // Another auth method succeeded, so erase the prompt line
+            let _ = tty.write_all(b"\r\x1b[2K");
+            // Drain the socket so it doesn't fire again
+            let mut drain = [0u8; 64];
+            let _ = notify.read(&mut drain);
+            break None;
+        }
+
+        if tty_ready {
+            let mut b = [0u8; 1];
+            if tty.read(&mut b).unwrap_or(0) == 0 {
+                break None;
+            }
+            match b[0] {
+                b'\n' | b'\r' => {
+                    let _ = tty.write_all(b"\n");
+                    break 'read CString::new(input).ok();
+                }
+                0x7f | 0x08 => {
+                    input.pop(); // backspace / DEL
+                }
+                0x03 | 0x04 => break None, // Ctrl-C / Ctrl-D
+                c => input.push(c),
             }
         }
-    }
+    };
+
+    let _ = tcsetattr(&*tty, OptionalActions::Now, &orig);
+    result
 }
 
 struct PamAny;
 pam_bindings::pam_hooks!(PamAny);
 impl PamHooks for PamAny {
     fn sm_authenticate(pamh: &mut PamHandle, args: Vec<&CStr>, _flags: PamFlag) -> PamResultCode {
-        // A pipe write after its reader already closed must not kill the host process via the default SIGPIPE disposition.
-        unsafe {
-            libc::signal(libc::SIGPIPE, libc::SIG_IGN);
-        }
-
         let arg_string = args
             .iter()
             .map(|s| s.to_str().unwrap())
@@ -183,29 +149,32 @@ impl PamHooks for PamAny {
 
         let prompt = format!(
             "{}: ",
-            input.modules.values().cloned().collect::<Vec<_>>().join(" or ")
+            input
+                .modules
+                .values()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(" or ")
         );
 
         // Falls back to conv.send if /dev/tty is unavailable (e.g. non-interactive sessions).
-        let tty_fd: Option<libc::c_int> = unsafe {
-            let fd = libc::open(b"/dev/tty\0".as_ptr() as *const libc::c_char, libc::O_RDWR | libc::O_CLOEXEC);
-            if fd >= 0 { Some(fd) } else { None }
-        };
+        let mut tty_file: Option<File> = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/tty")
+            .ok();
 
-        // Notification pipe: each thread gets a dup'd write end. Writing to it wakes
-        // the main thread out of select() when a result arrives.
-        let (notify_r, notify_w): (Option<libc::c_int>, Option<libc::c_int>) =
-            if tty_fd.is_some() {
-                let mut fds = [-1i32; 2];
-                if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } == 0 {
-                    (Some(fds[0]), Some(fds[1]))
-                } else {
-                    (None, None)
+        // Notification pipe: each thread gets a cloned write end. Writing to it wakes
+        // the main thread out of poll() when a result arrives.
+        let (mut notify_r, notify_w): (Option<UnixStream>, Option<UnixStream>) =
+            if tty_file.is_some() {
+                match UnixStream::pair() {
+                    Ok((r, w)) => (Some(r), Some(w)),
+                    Err(_) => (None, None),
                 }
             } else {
                 (None, None)
             };
-        let _fd_guard = FdGuard([tty_fd, notify_r]);
 
         let mode = input.mode;
         let (ref msg_tx, msg_rx) = std::sync::mpsc::channel();
@@ -217,27 +186,26 @@ impl PamHooks for PamAny {
                 let main_thread = thread::current();
                 let msg_tx = msg_tx.clone();
 
-                // Each thread owns a dup'd copy of the write end so it can signal independently
-                let thread_notify_w: Option<libc::c_int> = notify_w.and_then(dup_fd);
+                // Each thread owns a cloned write end so it can signal independently
+                let thread_notify_w: Option<UnixStream> =
+                    notify_w.as_ref().and_then(|w| w.try_clone().ok());
 
                 let (req_tx, req_rx) = std::sync::mpsc::sync_channel(1);
                 let (res_tx, res_rx) = std::sync::mpsc::sync_channel(1);
                 let (result_tx, result_rx) = std::sync::mpsc::sync_channel(1);
                 thread::spawn(move || {
                     // Only signals when this result decides the overall outcome, so a fast-failing service can't cancel a still-running one's prompt.
-                    let pipe_signal = |ok: bool, fd: Option<libc::c_int>| {
+                    let pipe_signal = |ok: bool, mut stream: Option<UnixStream>| {
                         let should_write = match mode {
                             Mode::One => ok,
                             Mode::All => !ok,
                         };
-                        if let Some(fd) = fd {
-                            unsafe {
-                                if should_write {
-                                    libc::write(fd, b"x".as_ptr() as *const libc::c_void, 1);
-                                }
-                                libc::close(fd);
-                            }
+                        if should_write && let Some(stream) = stream.as_mut() {
+                            // `NOSIGNAL`: if the main thread already returned and dropped the
+                            // read end, this must fail with EPIPE rather than SIGPIPE the host.
+                            let _ = send(&*stream, b"x", SendFlags::NOSIGNAL);
                         }
+                        // `stream` closes automatically here when it drops.
                         main_thread.unpark();
                     };
 
@@ -269,11 +237,8 @@ impl PamHooks for PamAny {
             })
             .collect::<Box<[_]>>();
 
-        // Close the master write end — threads own their dup'd copies.
-        // Once all threads finish and close their copies, notify_r becomes readable with EOF.
-        if let Some(w) = notify_w {
-            unsafe { libc::close(w); }
-        }
+        // Drop the master write end since threads own their cloned copies.
+        drop(notify_w);
 
         // If mode is One we count fails to know if all failed
         // If mode is All we count successes to know if all succeeded
@@ -282,7 +247,7 @@ impl PamHooks for PamAny {
         loop {
             let mut nothing_to_process = true;
 
-            // Check results first — a success here must not be delayed by pending messages
+            // Check results first, since a success here must not be delayed by pending messages
             for result in channels
                 .iter()
                 .filter_map(|(_, _, result_rx)| result_rx.try_recv().ok())
@@ -313,34 +278,44 @@ impl PamHooks for PamAny {
                 }
             }
 
-            // Drain all sub-service messages silently — text_info is redundant since the
-            // combined prompt already describes every available method, and error_msg is
-            // handled by the outer PAM stack (pam_faillock, sudo, etc.)
-            while msg_rx.try_recv().is_ok() {
+            // Sub-service messages are shown by default (matching the upstream rewrite);
+            // "silence_messages": true in the config drops them instead.
+            while let Ok(msg) = msg_rx.try_recv() {
                 nothing_to_process = false;
+                if !input.silence_messages {
+                    pam_try!(conv.send(msg._type.style(), &msg.msg));
+                }
             }
 
-            if !prompt_responded {
-                if let Some((req, res_tx)) = channels.iter().find_map(|(req_rx, res_tx, _)| {
+            if !prompt_responded
+                && let Some((req, res_tx)) = channels.iter().find_map(|(req_rx, res_tx, _)| {
                     if let Ok(req) = req_rx.try_recv() {
                         nothing_to_process = false;
                         Some((req, res_tx))
                     } else {
                         None
                     }
-                }) {
-                    let response = match (&req._type, tty_fd, notify_r) {
-                        // Echo-off: bypass conv.send, read from tty with select() so another
-                        // method's success can interrupt the read without waiting for Enter
-                        (PromptType::EchoOff, Some(tty), Some(nfd)) => {
-                            read_password_interruptible(tty, nfd, &prompt)
-                        }
-                        // YesNo or no tty: fall back to PAM conversation (blocking)
-                        _ => pam_try!(conv.send(req._type.style(), &prompt)),
-                    };
-                    let _ = res_tx.send(response);
-                    prompt_responded = true;
-                }
+                })
+            {
+                let response = match (&req._type, tty_file.as_mut(), notify_r.as_mut()) {
+                    // Echo-off: bypass conv.send, read from tty with poll() so another
+                    // method's success can interrupt the read without waiting for Enter
+                    (PromptType::EchoOff, Some(tty), Some(nfd)) => {
+                        read_password_interruptible(tty, nfd, &prompt)
+                    }
+                    // Echo-off without a usable tty: same combined prompt, blocking
+                    (PromptType::EchoOff, ..) => {
+                        pam_try!(conv.send(req._type.style(), &prompt))
+                    }
+                    // A yes/no question keeps the sub-module's own wording. The
+                    // combined prompt only reads correctly as "type your password
+                    // or use one of the other methods".
+                    (PromptType::YesNo, ..) => {
+                        pam_try!(conv.send(req._type.style(), &req.str))
+                    }
+                };
+                let _ = res_tx.send(response);
+                prompt_responded = true;
             }
 
             if nothing_to_process {

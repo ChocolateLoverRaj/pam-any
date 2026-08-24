@@ -19,6 +19,7 @@ auth sufficient libpam_any.so { "mode": "One", "modules": { "login": "Password",
 The text after `libpam_any.so` is a JSON object:
 `mode`: Can be either `"One"` or `"All"`. "One" means that you can authenticate with any of the specified methods. For example, you can *either* type your password or use your fingerprint. "All" means that you must authenticate all of the specified modules, but in any order.
 `modules`: Is an object where the key is a file that exists in `/etc/pam.d` and the value is the display name of the service. In the example above, `pam-any` will internally start PAM authentication based on the `/etc/pam.d/login` file (Text password), and `/etc/pam.d/pam-random` file [(A test module that randomly succeeds / fails)](https://github.com/ChocolateLoverRaj/pam-random). As soon as one of the two modules authenticates successfully, the `pam-any` module will authenticate successfully. If all sub-modules fail (wrong password), then `pam-any` will fail.
+`silence_messages`: Optional, defaults to `false`. When `false`, info and error messages sent by the sub-modules (for example a fingerprint module asking you to try again) are shown to the user through the normal PAM conversation. Set this to `true` if you'd rather those messages stay hidden.
 
 ## Testing with Nix (the easy way)
 Run
